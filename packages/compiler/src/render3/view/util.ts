@@ -7,6 +7,7 @@
  */
 
 import {ConstantPool} from '../../constant_pool';
+import {InputFlags} from '../../core';
 import {BindingType, Interpolation} from '../../expression_parser/ast';
 import {splitNsName} from '../../ml_parser/tags';
 import * as o from '../../output/output_ast';
@@ -179,7 +180,8 @@ export function conditionallyCreateDirectiveBindingLiteral(
       classPropertyName: string;
       bindingPropertyName: string;
       transformFunction: o.Expression|null;
-    }>, keepDeclared?: boolean): o.Expression|null {
+      isSignal: boolean,
+    }>, forInputs?: boolean): o.Expression|null {
   const keys = Object.getOwnPropertyNames(map);
 
   if (keys.length === 0) {
@@ -204,14 +206,33 @@ export function conditionallyCreateDirectiveBindingLiteral(
       declaredName = value.classPropertyName;
       publicName = value.bindingPropertyName;
 
-      if (keepDeclared && (publicName !== declaredName || value.transformFunction != null)) {
-        const expressionKeys = [asLiteral(publicName), asLiteral(declaredName)];
+      const differentDeclaringName = publicName !== declaredName;
+      const hasDecoratorInputTransform = value.transformFunction !== null;
 
-        if (value.transformFunction != null) {
-          expressionKeys.push(value.transformFunction);
+      // Build up input flags
+      let flags: o.Expression|null = null;
+      if (value.isSignal) {
+        flags = bitwiseOrInputFlagsExpr(InputFlags.SignalBased, flags);
+      }
+      if (hasDecoratorInputTransform) {
+        flags = bitwiseOrInputFlagsExpr(InputFlags.HasDecoratorInputTransform, flags);
+      }
+
+      // Inputs, compared to outputs, will track their declared name (for `ngOnChanges`), support
+      // decorator input transform functions, or store flag information if there is any.
+      if (forInputs && (differentDeclaringName || hasDecoratorInputTransform || flags !== null)) {
+        const flagsExpr = flags ?? o.importExpr(R3.InputFlags).prop(InputFlags[InputFlags.None]);
+        const result: o.Expression[] = [flagsExpr, asLiteral(publicName)];
+
+        if (differentDeclaringName || hasDecoratorInputTransform) {
+          result.push(asLiteral(declaredName));
+
+          if (hasDecoratorInputTransform) {
+            result.push(value.transformFunction!);
+          }
         }
 
-        expressionValue = o.literalArr(expressionKeys);
+        expressionValue = o.literalArr(result);
       } else {
         expressionValue = asLiteral(publicName);
       }
@@ -224,6 +245,19 @@ export function conditionallyCreateDirectiveBindingLiteral(
       value: expressionValue,
     };
   }));
+}
+
+/** Gets an output AST expression referencing the given flag. */
+function getInputFlagExpr(flag: InputFlags): o.Expression {
+  return o.importExpr(R3.InputFlags).prop(InputFlags[flag]);
+}
+
+/** Combines a given input flag with an existing flag expression, if present. */
+function bitwiseOrInputFlagsExpr(flag: InputFlags, expr: o.Expression|null): o.Expression {
+  if (expr === null) {
+    return getInputFlagExpr(flag);
+  }
+  return getInputFlagExpr(flag).bitwiseOr(expr);
 }
 
 /**

@@ -14,7 +14,7 @@ import {R3DeferBlockMetadata} from '../../../../../render3/view/api';
 import {BindingKind, DeferTriggerKind, I18nContextKind, I18nParamValueFlags, Namespace, OpKind, TemplateKind} from '../enums';
 import {SlotHandle} from '../handle';
 import {Op, OpList, XrefId} from '../operations';
-import {ConsumesSlotOpTrait, TRAIT_CONSUMES_SLOT} from '../traits';
+import {ConsumesSlotOpTrait, ConsumesVarsTrait, TRAIT_CONSUMES_SLOT, TRAIT_CONSUMES_VARS} from '../traits';
 
 import {ListEndOp, NEW_OP, StatementOp, VariableOp} from './shared';
 
@@ -27,7 +27,7 @@ export type CreateOp = ListEndOp<CreateOp>|StatementOp<CreateOp>|ElementOp|Eleme
     ElementEndOp|ContainerOp|ContainerStartOp|ContainerEndOp|TemplateOp|EnableBindingsOp|
     DisableBindingsOp|TextOp|ListenerOp|PipeOp|VariableOp<CreateOp>|NamespaceOp|ProjectionDefOp|
     ProjectionOp|ExtractedAttributeOp|DeferOp|DeferOnOp|RepeaterCreateOp|I18nMessageOp|I18nOp|
-    I18nStartOp|I18nEndOp|IcuStartOp|IcuEndOp|I18nContextOp|I18nAttributesOp;
+    I18nStartOp|I18nEndOp|IcuStartOp|IcuEndOp|IcuPlaceholderOp|I18nContextOp|I18nAttributesOp;
 
 /**
  * An operation representing the creation of an element or container.
@@ -101,7 +101,15 @@ export interface ElementOrContainerOpBase extends Op<CreateOp>, ConsumesSlotOpTr
    */
   nonBindable: boolean;
 
-  sourceSpan: ParseSourceSpan;
+  /**
+   * The span of the element's start tag.
+   */
+  startSourceSpan: ParseSourceSpan;
+
+  /**
+   * The whole source span of the element, including children.
+   */
+  wholeSourceSpan: ParseSourceSpan;
 }
 
 export interface ElementOpBase extends ElementOrContainerOpBase {
@@ -135,7 +143,7 @@ export interface ElementStartOp extends ElementOpBase {
  */
 export function createElementStartOp(
     tag: string, xref: XrefId, namespace: Namespace, i18nPlaceholder: i18n.TagPlaceholder|undefined,
-    sourceSpan: ParseSourceSpan): ElementStartOp {
+    startSourceSpan: ParseSourceSpan, wholeSourceSpan: ParseSourceSpan): ElementStartOp {
   return {
     kind: OpKind.ElementStart,
     xref,
@@ -146,7 +154,8 @@ export function createElementStartOp(
     nonBindable: false,
     namespace,
     i18nPlaceholder,
-    sourceSpan,
+    startSourceSpan,
+    wholeSourceSpan,
     ...TRAIT_CONSUMES_SLOT,
     ...NEW_OP,
   };
@@ -201,7 +210,7 @@ export interface TemplateOp extends ElementOpBase {
 export function createTemplateOp(
     xref: XrefId, templateKind: TemplateKind, tag: string|null, functionNameSuffix: string,
     namespace: Namespace, i18nPlaceholder: i18n.TagPlaceholder|i18n.BlockPlaceholder|undefined,
-    sourceSpan: ParseSourceSpan): TemplateOp {
+    startSourceSpan: ParseSourceSpan, wholeSourceSpan: ParseSourceSpan): TemplateOp {
   return {
     kind: OpKind.Template,
     xref,
@@ -216,7 +225,8 @@ export function createTemplateOp(
     nonBindable: false,
     namespace,
     i18nPlaceholder,
-    sourceSpan,
+    startSourceSpan,
+    wholeSourceSpan,
     ...TRAIT_CONSUMES_SLOT,
     ...NEW_OP,
   };
@@ -225,7 +235,7 @@ export function createTemplateOp(
 /**
  * An op that creates a repeater (e.g. a for loop).
  */
-export interface RepeaterCreateOp extends ElementOpBase {
+export interface RepeaterCreateOp extends ElementOpBase, ConsumesVarsTrait {
   kind: OpKind.RepeaterCreate;
 
   /**
@@ -272,6 +282,17 @@ export interface RepeaterCreateOp extends ElementOpBase {
   functionNameSuffix: string;
 
   /**
+   * Tag name for the empty block.
+   */
+  emptyTag: string|null;
+
+  /**
+   * Attributes of various kinds on the empty block. Represented as a `ConstIndex` pointer into the
+   * shared `consts` array of the component compilation.
+   */
+  emptyAttributes: ConstIndex|null;
+
+  /**
    * The i18n placeholder for the repeated item template.
    */
   i18nPlaceholder: i18n.BlockPlaceholder|undefined;
@@ -280,8 +301,6 @@ export interface RepeaterCreateOp extends ElementOpBase {
    * The i18n placeholder for the empty template.
    */
   emptyI18nPlaceholder: i18n.BlockPlaceholder|undefined;
-
-  sourceSpan: ParseSourceSpan;
 }
 
 // TODO: add source spans?
@@ -297,9 +316,10 @@ export interface RepeaterVarNames {
 
 export function createRepeaterCreateOp(
     primaryView: XrefId, emptyView: XrefId|null, tag: string|null, track: o.Expression,
-    varNames: RepeaterVarNames, i18nPlaceholder: i18n.BlockPlaceholder|undefined,
-    emptyI18nPlaceholder: i18n.BlockPlaceholder|undefined,
-    sourceSpan: ParseSourceSpan): RepeaterCreateOp {
+    varNames: RepeaterVarNames, emptyTag: string|null,
+    i18nPlaceholder: i18n.BlockPlaceholder|undefined,
+    emptyI18nPlaceholder: i18n.BlockPlaceholder|undefined, startSourceSpan: ParseSourceSpan,
+    wholeSourceSpan: ParseSourceSpan): RepeaterCreateOp {
   return {
     kind: OpKind.RepeaterCreate,
     attributes: null,
@@ -309,6 +329,8 @@ export function createRepeaterCreateOp(
     track,
     trackByFn: null,
     tag,
+    emptyTag,
+    emptyAttributes: null,
     functionNameSuffix: 'For',
     namespace: Namespace.HTML,
     nonBindable: false,
@@ -319,9 +341,11 @@ export function createRepeaterCreateOp(
     usesComponentInstance: false,
     i18nPlaceholder,
     emptyI18nPlaceholder,
-    sourceSpan,
+    startSourceSpan,
+    wholeSourceSpan,
     ...TRAIT_CONSUMES_SLOT,
     ...NEW_OP,
+    ...TRAIT_CONSUMES_VARS,
     numSlotsUsed: emptyView === null ? 2 : 3,
   };
 }
@@ -441,6 +465,12 @@ export interface TextOp extends Op<CreateOp>, ConsumesSlotOpTrait {
    */
   initialValue: string;
 
+  /**
+   * The placeholder for this text in its parent ICU. If this text is not part of an ICU, the
+   * placeholder is null.
+   */
+  icuPlaceholder: string|null;
+
   sourceSpan: ParseSourceSpan|null;
 }
 
@@ -448,12 +478,14 @@ export interface TextOp extends Op<CreateOp>, ConsumesSlotOpTrait {
  * Create a `TextOp`.
  */
 export function createTextOp(
-    xref: XrefId, initialValue: string, sourceSpan: ParseSourceSpan|null): TextOp {
+    xref: XrefId, initialValue: string, icuPlaceholder: string|null,
+    sourceSpan: ParseSourceSpan|null): TextOp {
   return {
     kind: OpKind.Text,
     xref,
     handle: new SlotHandle(),
     initialValue,
+    icuPlaceholder,
     sourceSpan,
     ...TRAIT_CONSUMES_SLOT,
     ...NEW_OP,
@@ -606,7 +638,7 @@ export interface ProjectionOp extends Op<CreateOp>, ConsumesSlotOpTrait {
 
   projectionSlotIndex: number;
 
-  attributes: string[];
+  attributes: null|o.LiteralArrayExpr;
 
   localRefs: string[];
 
@@ -619,7 +651,7 @@ export interface ProjectionOp extends Op<CreateOp>, ConsumesSlotOpTrait {
 
 export function createProjectionOp(
     xref: XrefId, selector: string, i18nPlaceholder: i18n.TagPlaceholder|undefined,
-    attributes: string[], sourceSpan: ParseSourceSpan): ProjectionOp {
+    sourceSpan: ParseSourceSpan): ProjectionOp {
   return {
     kind: OpKind.Projection,
     xref,
@@ -627,7 +659,7 @@ export function createProjectionOp(
     selector,
     i18nPlaceholder,
     projectionSlotIndex: 0,
-    attributes,
+    attributes: null,
     localRefs: [],
     sourceSpan,
     ...NEW_OP,
@@ -650,6 +682,11 @@ export interface ExtractedAttributeOp extends Op<CreateOp> {
    *  The kind of binding represented by this extracted attribute.
    */
   bindingKind: BindingKind;
+
+  /**
+   * The namespace of the attribute (or null if none).
+   */
+  namespace: string|null;
 
   /**
    * The name of the extracted attribute.
@@ -684,13 +721,14 @@ export interface ExtractedAttributeOp extends Op<CreateOp> {
  * Create an `ExtractedAttributeOp`.
  */
 export function createExtractedAttributeOp(
-    target: XrefId, bindingKind: BindingKind, name: string, expression: o.Expression|null,
-    i18nContext: XrefId|null, i18nMessage: i18n.Message|null,
+    target: XrefId, bindingKind: BindingKind, namespace: string|null, name: string,
+    expression: o.Expression|null, i18nContext: XrefId|null, i18nMessage: i18n.Message|null,
     securityContext: SecurityContext|SecurityContext[]): ExtractedAttributeOp {
   return {
     kind: OpKind.ExtractedAttribute,
     target,
     bindingKind,
+    namespace,
     name,
     expression,
     i18nContext,
@@ -1009,6 +1047,8 @@ export interface I18nOpBase extends Op<CreateOp>, ConsumesSlotOpTrait {
    * The i18n context generated from this block. Initially null, until the context is created.
    */
   context: XrefId|null;
+
+  sourceSpan: ParseSourceSpan|null;
 }
 
 /**
@@ -1028,7 +1068,9 @@ export interface I18nStartOp extends I18nOpBase {
 /**
  * Create an `I18nStartOp`.
  */
-export function createI18nStartOp(xref: XrefId, message: i18n.Message, root?: XrefId): I18nStartOp {
+export function createI18nStartOp(
+    xref: XrefId, message: i18n.Message, root: XrefId|undefined,
+    sourceSpan: ParseSourceSpan|null): I18nStartOp {
   return {
     kind: OpKind.I18nStart,
     xref,
@@ -1038,6 +1080,7 @@ export function createI18nStartOp(xref: XrefId, message: i18n.Message, root?: Xr
     messageIndex: null,
     subTemplateIndex: null,
     context: null,
+    sourceSpan,
     ...NEW_OP,
     ...TRAIT_CONSUMES_SLOT,
   };
@@ -1053,15 +1096,18 @@ export interface I18nEndOp extends Op<CreateOp> {
    * The `XrefId` of the `I18nStartOp` that created this block.
    */
   xref: XrefId;
+
+  sourceSpan: ParseSourceSpan|null;
 }
 
 /**
  * Create an `I18nEndOp`.
  */
-export function createI18nEndOp(xref: XrefId): I18nEndOp {
+export function createI18nEndOp(xref: XrefId, sourceSpan: ParseSourceSpan|null): I18nEndOp {
   return {
     kind: OpKind.I18nEnd,
     xref,
+    sourceSpan,
     ...NEW_OP,
   };
 }
@@ -1131,6 +1177,51 @@ export function createIcuEndOp(xref: XrefId): IcuEndOp {
   return {
     kind: OpKind.IcuEnd,
     xref,
+    ...NEW_OP,
+  };
+}
+
+/**
+ * An op that represents a placeholder in an ICU expression.
+ */
+export interface IcuPlaceholderOp extends Op<CreateOp> {
+  kind: OpKind.IcuPlaceholder;
+
+  /**
+   * The ID of the ICU placeholder.
+   */
+  xref: XrefId;
+
+  /**
+   * The name of the placeholder in the ICU expression.
+   */
+  name: string;
+
+  /**
+   * The static strings to be combined with dynamic expression values to form the text. This works
+   * like interpolation, but the strings are combined at compile time, using special placeholders
+   * for the dynamic expressions, and put into the translated message.
+   */
+  strings: string[];
+
+  /**
+   * Placeholder values for the i18n expressions to be combined with the static strings to form the
+   * full placeholder value.
+   */
+  expressionPlaceholders: I18nParamValue[];
+}
+
+/**
+ * Creates an ICU placeholder op.
+ */
+export function createIcuPlaceholderOp(
+    xref: XrefId, name: string, strings: string[]): IcuPlaceholderOp {
+  return {
+    kind: OpKind.IcuPlaceholder,
+    xref,
+    name,
+    strings,
+    expressionPlaceholders: [],
     ...NEW_OP,
   };
 }

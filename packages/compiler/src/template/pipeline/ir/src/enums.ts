@@ -231,6 +231,11 @@ export enum OpKind {
   IcuEnd,
 
   /**
+   * An instruction representing a placeholder in an ICU expression.
+   */
+  IcuPlaceholder,
+
+  /**
    * An i18n context containing information needed to generate an i18n message.
    */
   I18nContext,
@@ -555,16 +560,6 @@ export enum DeferTriggerKind {
   Hover,
   Interaction,
   Viewport,
-}
-
-/**
- * Repeaters implicitly define these derived variables, and child nodes may read them.
- */
-export enum DerivedRepeaterVarIdentity {
-  First,
-  Last,
-  Even,
-  Odd,
 }
 
 /**

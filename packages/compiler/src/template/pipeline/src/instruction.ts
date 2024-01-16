@@ -135,12 +135,7 @@ export function namespaceMath(): ir.CreateOp {
 }
 
 export function advance(delta: number, sourceSpan: ParseSourceSpan): ir.UpdateOp {
-  return call(
-      Identifiers.advance,
-      [
-        o.literal(delta),
-      ],
-      sourceSpan);
+  return call(Identifiers.advance, delta > 1 ? [o.literal(delta)] : [], sourceSpan);
 }
 
 export function reference(slot: number): o.Expression {
@@ -240,30 +235,33 @@ export function projectionDef(def: o.Expression|null): ir.CreateOp {
 }
 
 export function projection(
-    slot: number, projectionSlotIndex: number, attributes: string[],
+    slot: number, projectionSlotIndex: number, attributes: o.LiteralArrayExpr|null,
     sourceSpan: ParseSourceSpan): ir.CreateOp {
   const args: o.Expression[] = [o.literal(slot)];
-  if (projectionSlotIndex !== 0 || attributes.length > 0) {
+  if (projectionSlotIndex !== 0 || attributes !== null) {
     args.push(o.literal(projectionSlotIndex));
-    if (attributes.length > 0) {
-      args.push(o.literalArr(attributes.map(attr => o.literal(attr))));
+    if (attributes !== null) {
+      args.push(attributes);
     }
   }
   return call(Identifiers.projection, args, sourceSpan);
 }
 
-export function i18nStart(slot: number, constIndex: number, subTemplateIndex: number): ir.CreateOp {
+export function i18nStart(
+    slot: number, constIndex: number, subTemplateIndex: number,
+    sourceSpan: ParseSourceSpan|null): ir.CreateOp {
   const args = [o.literal(slot), o.literal(constIndex)];
   if (subTemplateIndex !== null) {
     args.push(o.literal(subTemplateIndex));
   }
-  return call(Identifiers.i18nStart, args, null);
+  return call(Identifiers.i18nStart, args, sourceSpan);
 }
 
 export function repeaterCreate(
     slot: number, viewFnName: string, decls: number, vars: number, tag: string|null,
     constIndex: number|null, trackByFn: o.Expression, trackByUsesComponentInstance: boolean,
     emptyViewFnName: string|null, emptyDecls: number|null, emptyVars: number|null,
+    emptyTag: string|null, emptyConstIndex: number|null,
     sourceSpan: ParseSourceSpan|null): ir.CreateOp {
   const args = [
     o.literal(slot),
@@ -278,6 +276,12 @@ export function repeaterCreate(
     args.push(o.literal(trackByUsesComponentInstance));
     if (emptyViewFnName !== null) {
       args.push(o.variable(emptyViewFnName), o.literal(emptyDecls), o.literal(emptyVars));
+      if (emptyTag !== null || emptyConstIndex !== null) {
+        args.push(o.literal(emptyTag));
+      }
+      if (emptyConstIndex !== null) {
+        args.push(o.literal(emptyConstIndex));
+      }
     }
   }
   return call(Identifiers.repeaterCreate, args, sourceSpan);
@@ -292,16 +296,18 @@ export function deferWhen(
   return call(prefetch ? Identifiers.deferPrefetchWhen : Identifiers.deferWhen, [expr], sourceSpan);
 }
 
-export function i18n(slot: number, constIndex: number, subTemplateIndex: number): ir.CreateOp {
+export function i18n(
+    slot: number, constIndex: number, subTemplateIndex: number,
+    sourceSpan: ParseSourceSpan|null): ir.CreateOp {
   const args = [o.literal(slot), o.literal(constIndex)];
   if (subTemplateIndex) {
     args.push(o.literal(subTemplateIndex));
   }
-  return call(Identifiers.i18n, args, null);
+  return call(Identifiers.i18n, args, sourceSpan);
 }
 
-export function i18nEnd(): ir.CreateOp {
-  return call(Identifiers.i18nEnd, [], null);
+export function i18nEnd(endSourceSpan: ParseSourceSpan|null): ir.CreateOp {
+  return call(Identifiers.i18nEnd, [], endSourceSpan);
 }
 
 export function i18nAttributes(slot: number, i18nAttributesConfig: number): ir.CreateOp {
@@ -320,10 +326,14 @@ export function property(
 }
 
 export function attribute(
-    name: string, expression: o.Expression, sanitizer: o.Expression|null): ir.UpdateOp {
+    name: string, expression: o.Expression, sanitizer: o.Expression|null,
+    namespace: string|null): ir.UpdateOp {
   const args = [o.literal(name), expression];
-  if (sanitizer !== null) {
-    args.push(sanitizer);
+  if (sanitizer !== null || namespace !== null) {
+    args.push(sanitizer ?? o.literal(null));
+  }
+  if (namespace !== null) {
+    args.push(o.literal(namespace));
   }
   return call(Identifiers.attribute, args, null);
 }

@@ -362,8 +362,25 @@
           "files": [
             {
               "expected": "host_with_ts_expression_node_template.js",
-              "templatePipelineExpected": "host_with_ts_expression_node_template.pipeline.js",
               "generated": "host_with_ts_expression_node.js"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": "should handle deceptive attribute names",
+      "inputFiles": [
+        "deceptive_attrs.ts"
+      ],
+      "expectations": [
+        {
+          "failureMessage": "Invalid host binding code",
+          "files": [
+            {
+              "generated": "deceptive_attrs.js",
+              "expected": "deceptive_attrs.template.js",
+              "templatePipelineExpected": "deceptive_attrs.pipeline.js"
             }
           ]
         }

@@ -13,7 +13,7 @@ import {migrateFor} from './fors';
 import {migrateIf} from './ifs';
 import {migrateSwitch} from './switches';
 import {AnalyzedFile, endI18nMarker, endMarker, MigrateError, startI18nMarker, startMarker} from './types';
-import {canRemoveCommonModule, formatTemplate, parseTemplate, processNgTemplates, removeImports} from './util';
+import {canRemoveCommonModule, formatTemplate, parseTemplate, processNgTemplates, removeImports, validateI18nStructure, validateMigratedTemplate} from './util';
 
 /**
  * Actually migrates a given template to the new syntax
@@ -42,15 +42,9 @@ export function migrateTemplate(
     if (changed) {
       // determine if migrated template is a valid structure
       // if it is not, fail out
-      const parsed = parseTemplate(migrated);
-      if (parsed.errors.length > 0) {
-        const parsingError = {
-          type: 'parse',
-          error: new Error(
-              `The migration resulted in invalid HTML for ${file.sourceFilePath}. ` +
-              `Please check the template for valid HTML structures and run the migration again.`)
-        };
-        return {migrated: template, errors: [parsingError]};
+      const errors = validateMigratedTemplate(migrated, file.sourceFile.fileName);
+      if (errors.length > 0) {
+        return {migrated: template, errors};
       }
     }
 
@@ -68,11 +62,21 @@ export function migrateTemplate(
     // whether it's safe to remove the CommonModule to the
     // original component class source file
     if (templateType === 'templateUrl' && analyzedFiles !== null &&
-        analyzedFiles.has(file.sourceFilePath)) {
-      const componentFile = analyzedFiles.get(file.sourceFilePath)!;
+        analyzedFiles.has(file.sourceFile.fileName)) {
+      const componentFile = analyzedFiles.get(file.sourceFile.fileName)!;
+      componentFile.getSortedRanges();
+      // we have already checked the template file to see if it is safe to remove the imports
+      // and common module. This check is passed off to the associated .ts file here so
+      // the class knows whether it's safe to remove from the template side.
       componentFile.removeCommonModule = file.removeCommonModule;
       componentFile.canRemoveImports = file.canRemoveImports;
+
+      // At this point, we need to verify the component class file doesn't have any other imports
+      // that prevent safe removal of common module. It could be that there's an associated ngmodule
+      // and in that case we can't safely remove the common module import.
+      componentFile.verifyCanRemoveImports();
     }
+    file.verifyCanRemoveImports();
 
     errors = [
       ...ifResult.errors,
@@ -81,7 +85,7 @@ export function migrateTemplate(
       ...caseResult.errors,
     ];
   } else if (file.canRemoveImports) {
-    migrated = removeImports(template, node, file.removeCommonModule);
+    migrated = removeImports(template, node, file);
   }
 
   return {migrated, errors};

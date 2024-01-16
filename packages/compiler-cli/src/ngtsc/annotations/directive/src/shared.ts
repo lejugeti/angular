@@ -17,7 +17,7 @@ import {AmbientImport, ClassDeclaration, ClassMember, ClassMemberKind, Decorator
 import {CompilationMode} from '../../../transform';
 import {createSourceSpan, createValueHasWrongTypeError, forwardRefResolver, getConstructorDependencies, ReferencesRegistry, toR3Reference, tryUnwrapForwardRef, unwrapConstructorDependencies, unwrapExpression, validateConstructorDependencies, wrapFunctionExpressionsInParens, wrapTypeReference,} from '../../common';
 
-import {tryParseInputInitializerAndOptions} from './input_function';
+import {tryParseSignalInputMapping} from './input_function';
 
 const EMPTY_OBJECT: {[key: string]: string} = {};
 const QUERY_TYPES = new Set([
@@ -34,7 +34,7 @@ const QUERY_TYPES = new Set([
  * the module.
  */
 export function extractDirectiveMetadata(
-    clazz: ClassDeclaration, decorator: Readonly<Decorator|null>, reflector: ReflectionHost,
+    clazz: ClassDeclaration, decorator: Readonly<Decorator>, reflector: ReflectionHost,
     evaluator: PartialEvaluator, refEmitter: ReferenceEmitter,
     referencesRegistry: ReferencesRegistry, isCore: boolean, annotateForClosureCompiler: boolean,
     compilationMode: CompilationMode, defaultSelector: string|null = null): {
@@ -46,7 +46,7 @@ export function extractDirectiveMetadata(
   hostDirectives: HostDirectiveMeta[] | null, rawHostDirectives: ts.Expression | null,
 }|undefined {
   let directive: Map<string, ts.Expression>;
-  if (decorator === null || decorator.args === null || decorator.args.length === 0) {
+  if (decorator.args === null || decorator.args.length === 0) {
     directive = new Map<string, ts.Expression>();
   } else if (decorator.args.length !== 1) {
     throw new FatalDiagnosticError(
@@ -78,9 +78,11 @@ export function extractDirectiveMetadata(
 
   // Construct the map of inputs both from the @Directive/@Component
   // decorator, and the decorated fields.
-  const inputsFromMeta = parseInputsArray(clazz, directive, evaluator, reflector, refEmitter);
-  const inputsFromFields =
-      parseInputFields(clazz, members, evaluator, reflector, refEmitter, coreModule);
+  const inputsFromMeta =
+      parseInputsArray(clazz, directive, evaluator, reflector, refEmitter, compilationMode);
+  const inputsFromFields = parseInputFields(
+      clazz, members, evaluator, reflector, refEmitter, coreModule, compilationMode, inputsFromMeta,
+      decorator);
   const inputs = ClassPropertyMapping.fromMappedObject({...inputsFromMeta, ...inputsFromFields});
 
   // And outputs.
@@ -616,8 +618,8 @@ function parseDecoratedFields(
 /** Parses the `inputs` array of a directive/component decorator. */
 function parseInputsArray(
     clazz: ClassDeclaration, decoratorMetadata: Map<string, ts.Expression>,
-    evaluator: PartialEvaluator, reflector: ReflectionHost,
-    refEmitter: ReferenceEmitter): Record<string, InputMapping> {
+    evaluator: PartialEvaluator, reflector: ReflectionHost, refEmitter: ReferenceEmitter,
+    compilationMode: CompilationMode): Record<string, InputMapping> {
   const inputsField = decoratorMetadata.get('inputs');
 
   if (inputsField === undefined) {
@@ -669,7 +671,7 @@ function parseInputsArray(
         }
 
         transform = parseDecoratorInputTransformFunction(
-            clazz, name, transformValue, reflector, refEmitter);
+            clazz, name, transformValue, reflector, refEmitter, compilationMode);
       }
 
       inputs[name] = {
@@ -711,12 +713,20 @@ function tryGetDecoratorOnMember(
 
 function tryParseInputFieldMapping(
     clazz: ClassDeclaration, member: ClassMember, evaluator: PartialEvaluator,
-    reflector: ReflectionHost, coreModule: string|undefined,
-    refEmitter: ReferenceEmitter): InputMapping|null {
+    reflector: ReflectionHost, coreModule: string|undefined, refEmitter: ReferenceEmitter,
+    compilationMode: CompilationMode): InputMapping|null {
   const classPropertyName = member.name;
 
-  // Look for a decorator first.
   const decorator = tryGetDecoratorOnMember(member, 'Input', coreModule);
+  const signalInputMapping = tryParseSignalInputMapping(member, reflector, coreModule);
+
+  if (decorator !== null && signalInputMapping !== null) {
+    throw new FatalDiagnosticError(
+        ErrorCode.SIGNAL_INPUT_AND_DISALLOWED_DECORATOR, decorator.node,
+        `Using @Input with a signal input is not allowed.`);
+  }
+
+  // Check `@Input` case.
   if (decorator !== null) {
     if (decorator.args !== null && decorator.args.length > 1) {
       throw new FatalDiagnosticError(
@@ -757,7 +767,7 @@ function tryParseInputFieldMapping(
       }
 
       transform = parseDecoratorInputTransformFunction(
-          clazz, classPropertyName, transformValue, reflector, refEmitter);
+          clazz, classPropertyName, transformValue, reflector, refEmitter, compilationMode);
     }
 
     return {
@@ -769,26 +779,9 @@ function tryParseInputFieldMapping(
     };
   }
 
-  // Look for a signal input.
-  const signalInput = tryParseInputInitializerAndOptions(member, reflector, coreModule);
-  if (signalInput !== null) {
-    const optionsNode = signalInput.optionsNode;
-    const options = optionsNode !== undefined ? evaluator.evaluate(optionsNode) : null;
-
-    let bindingPropertyName = classPropertyName;
-    if (options instanceof Map && typeof options.get('alias') === 'string') {
-      bindingPropertyName = options.get('alias') as string;
-    }
-
-    return {
-      isSignal: true,
-      classPropertyName,
-      bindingPropertyName,
-      required: signalInput.isRequired,
-      // Signal inputs do not capture complex transform metadata.
-      // See more details in the `transform` type of `InputMapping`.
-      transform: null,
-    };
+  // Look for signal inputs. e.g. `memberName = input()`
+  if (signalInputMapping !== null) {
+    return signalInputMapping;
   }
 
   return null;
@@ -797,15 +790,12 @@ function tryParseInputFieldMapping(
 /** Parses the class members that declare inputs (via decorator or initializer). */
 function parseInputFields(
     clazz: ClassDeclaration, members: ClassMember[], evaluator: PartialEvaluator,
-    reflector: ReflectionHost, refEmitter: ReferenceEmitter,
-    coreModule: string|undefined): Record<string, InputMapping> {
+    reflector: ReflectionHost, refEmitter: ReferenceEmitter, coreModule: string|undefined,
+    compilationMode: CompilationMode, inputsFromClassDecorator: Record<string, InputMapping>,
+    classDecorator: Decorator): Record<string, InputMapping> {
   const inputs = {} as Record<string, InputMapping>;
 
   for (const member of members) {
-    if (member.isStatic) {
-      continue;
-    }
-
     const classPropertyName = member.name;
     const inputMapping = tryParseInputFieldMapping(
         clazz,
@@ -814,10 +804,27 @@ function parseInputFields(
         reflector,
         coreModule,
         refEmitter,
+        compilationMode,
     );
-    if (inputMapping !== null) {
-      inputs[classPropertyName] = inputMapping;
+    if (inputMapping === null) {
+      continue;
     }
+
+    if (member.isStatic) {
+      throw new FatalDiagnosticError(
+          ErrorCode.INPUT_DECLARED_ON_STATIC_MEMBER, member.node ?? clazz,
+          `Input "${member.name}" is incorrectly declared as static member of "${
+              clazz.name.text}".`);
+    }
+
+    // Validate that signal inputs are not accidentally declared in the `inputs` metadata.
+    if (inputMapping.isSignal && inputsFromClassDecorator.hasOwnProperty(classPropertyName)) {
+      throw new FatalDiagnosticError(
+          ErrorCode.SIGNAL_INPUT_AND_INPUTS_ARRAY_COLLISION, member.node ?? clazz,
+          `Input "${member.name}" is also declared as non-signal in @${classDecorator.name}.`);
+    }
+
+    inputs[classPropertyName] = inputMapping;
   }
 
   return inputs;
@@ -836,7 +843,28 @@ function parseInputFields(
  */
 export function parseDecoratorInputTransformFunction(
     clazz: ClassDeclaration, classPropertyName: string, value: DynamicValue|Reference,
-    reflector: ReflectionHost, refEmitter: ReferenceEmitter): DecoratorInputTransform {
+    reflector: ReflectionHost, refEmitter: ReferenceEmitter,
+    compilationMode: CompilationMode): DecoratorInputTransform {
+  // In local compilation mode we can skip type checking the function args. This is because usually
+  // the type check is done in a separate build which runs in full compilation mode. So here we skip
+  // all the diagnostics.
+  if (compilationMode === CompilationMode.LOCAL) {
+    const node =
+        value instanceof Reference ? value.getIdentityIn(clazz.getSourceFile()) : value.node;
+
+    // This should never be null since we know the reference originates
+    // from the same file, but we null check it just in case.
+    if (node === null) {
+      throw createValueHasWrongTypeError(
+          value.node, value, 'Input transform function could not be referenced');
+    }
+
+    return {
+      node,
+      type: new Reference(ts.factory.createKeywordTypeNode(ts.SyntaxKind.UnknownKeyword))
+    };
+  }
+
   const definition = reflector.getDefinitionOfFunction(value.node);
 
   if (definition === null) {

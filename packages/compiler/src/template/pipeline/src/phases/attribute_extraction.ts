@@ -40,7 +40,8 @@ export function extractAttributes(job: CompilationJob): void {
             ir.OpList.insertBefore<ir.CreateOp>(
                 // Deliberaly null i18nMessage value
                 ir.createExtractedAttributeOp(
-                    op.target, bindingKind, op.name, /* expression */ null, /* i18nContext */ null,
+                    op.target, bindingKind, null, op.name, /* expression */ null,
+                    /* i18nContext */ null,
                     /* i18nMessage */ null, op.securityContext),
                 lookupElement(elements, op.target));
           }
@@ -56,7 +57,7 @@ export function extractAttributes(job: CompilationJob): void {
               op.expression instanceof ir.EmptyExpr) {
             ir.OpList.insertBefore<ir.CreateOp>(
                 ir.createExtractedAttributeOp(
-                    op.target, ir.BindingKind.Property, op.name, /* expression */ null,
+                    op.target, ir.BindingKind.Property, null, op.name, /* expression */ null,
                     /* i18nContext */ null,
                     /* i18nMessage */ null, SecurityContext.STYLE),
                 lookupElement(elements, op.target));
@@ -65,10 +66,15 @@ export function extractAttributes(job: CompilationJob): void {
         case ir.OpKind.Listener:
           if (!op.isAnimationListener) {
             const extractedAttributeOp = ir.createExtractedAttributeOp(
-                op.target, ir.BindingKind.Property, op.name, /* expression */ null,
+                op.target, ir.BindingKind.Property, null, op.name, /* expression */ null,
                 /* i18nContext */ null,
                 /* i18nMessage */ null, SecurityContext.NONE);
             if (job.kind === CompilationJobKind.Host) {
+              if (job.compatibility) {
+                // TemplateDefinitionBuilder does not extract listener bindings to the const array
+                // (which is honestly pretty inconsistent).
+                break;
+              }
               // This attribute will apply to the enclosing host binding compilation unit, so order
               // doesn't matter.
               unit.create.push(extractedAttributeOp);
@@ -106,28 +112,18 @@ function extractAttributeOp(
     return;
   }
 
-  let extractable = op.expression.isConstant();
+  let extractable = op.isTextAttribute || op.expression.isConstant();
   if (unit.job.compatibility === ir.CompatibilityMode.TemplateDefinitionBuilder) {
-    // TemplateDefinitionBuilder only extracted attributes that were string literals.
-    extractable = ir.isStringLiteral(op.expression);
-    if (op.name === 'style' || op.name === 'class') {
-      // For style and class attributes, TemplateDefinitionBuilder only extracted them if they were
-      // text attributes. For example, `[attr.class]="'my-class'"` was not extracted despite being a
-      // string literal, because it is not a text attribute.
-      extractable &&= op.isTextAttribute;
-    }
-    if (unit.job.kind === CompilationJobKind.Host) {
-      // TemplateDefinitionBuilder also does not seem to extract string literals if they are part of
-      // a host attribute.
-      extractable &&= op.isTextAttribute;
-    }
+    // TemplateDefinitionBuilder only extracts text attributes. It does not extract attriibute
+    // bindings, even if they are constants.
+    extractable &&= op.isTextAttribute;
   }
 
   if (extractable) {
     const extractedAttributeOp = ir.createExtractedAttributeOp(
         op.target,
         op.isStructuralTemplateAttribute ? ir.BindingKind.Template : ir.BindingKind.Attribute,
-        op.name, op.expression, op.i18nContext, op.i18nMessage, op.securityContext);
+        op.namespace, op.name, op.expression, op.i18nContext, op.i18nMessage, op.securityContext);
     if (unit.job.kind === CompilationJobKind.Host) {
       // This attribute will apply to the enclosing host binding compilation unit, so order doesn't
       // matter.

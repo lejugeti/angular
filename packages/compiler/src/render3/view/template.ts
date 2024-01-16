@@ -248,6 +248,7 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
       private i18nUseExternalIds: boolean,
       private deferBlocks: Map<t.DeferredBlock, R3DeferBlockMetadata>,
       private elementLocations: Map<t.Element, {index: number, level: number}>,
+      private allDeferrableDepsFn: o.ReadVarExpr|null,
       private _constants: ComponentDefConsts = createComponentDefConsts()) {
     this._bindingScope = parentBindingScope.nestedScope(level);
 
@@ -958,7 +959,7 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
     const visitor = new TemplateDefinitionBuilder(
         this.constantPool, this._bindingScope, this.level + 1, contextName, this.i18n, index, name,
         this._namespace, this.fileBasedI18nSuffix, this.i18nUseExternalIds, this.deferBlocks,
-        this.elementLocations, this._constants);
+        this.elementLocations, this.allDeferrableDepsFn, this._constants);
 
     // Nested templates must not be visited until after their parent templates have completed
     // processing, so they are queued here until after the initial pass. Otherwise, we wouldn't
@@ -1249,6 +1250,10 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
   }
 
   visitSwitchBlock(block: t.SwitchBlock): void {
+    if (block.cases.length === 0) {
+      return;
+    }
+
     // We have to process the block in two steps: once here and again in the update instruction
     // callback in order to generate the correct expressions when pipes or pure functions are used.
     const caseData = block.cases.map(currentCase => {
@@ -1350,7 +1355,7 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
         deferred.sourceSpan, R3.defer, trimTrailingNulls([
           o.literal(deferredIndex),
           o.literal(primaryTemplateIndex),
-          this.createDeferredDepsFunction(depsFnName, metadata),
+          this.allDeferrableDepsFn ?? this.createDeferredDepsFunction(depsFnName, metadata),
           o.literal(loadingIndex),
           o.literal(placeholderIndex),
           o.literal(errorIndex),
@@ -1498,7 +1503,8 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
    * node.
    * @param node Node for which to infer the projection data.
    */
-  private inferProjectionDataFromInsertionPoint(node: t.IfBlockBranch|t.ForLoopBlock) {
+  private inferProjectionDataFromInsertionPoint(node: t.IfBlockBranch|t.ForLoopBlock|
+                                                t.ForLoopBlockEmpty) {
     let root: t.Element|t.Template|null = null;
     let tagName: string|null = null;
     let attrsExprs: o.Expression[]|undefined;
@@ -1560,8 +1566,13 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
     const {expression: trackByExpression, usesComponentInstance: trackByUsesComponentInstance} =
         this.createTrackByFunction(block);
     let emptyData: TemplateData|null = null;
+    let emptyTagName: string|null = null;
+    let emptyAttrsExprs: o.Expression[]|undefined;
 
     if (block.empty !== null) {
+      const emptyInferred = this.inferProjectionDataFromInsertionPoint(block.empty);
+      emptyTagName = emptyInferred.tagName;
+      emptyAttrsExprs = emptyInferred.attrsExprs;
       emptyData = this.prepareEmbeddedTemplateFn(
           block.empty.children, '_ForEmpty', undefined, block.empty.i18n);
       // Allocate an extra slot for the empty block tracking.
@@ -1585,13 +1596,14 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
       if (emptyData !== null) {
         params.push(
             o.literal(trackByUsesComponentInstance), o.variable(emptyData.name),
-            o.literal(emptyData.getConstCount()), o.literal(emptyData.getVarCount()));
+            o.literal(emptyData.getConstCount()), o.literal(emptyData.getVarCount()),
+            o.literal(emptyTagName), this.addAttrsToConsts(emptyAttrsExprs || null));
       } else if (trackByUsesComponentInstance) {
         // If the tracking function doesn't use the component instance, we can omit the flag.
         params.push(o.literal(trackByUsesComponentInstance));
       }
 
-      return params;
+      return trimTrailingNulls(params);
     });
 
     // Note: the expression needs to be processed *after* the template,
@@ -1856,7 +1868,8 @@ export class TemplateDefinitionBuilder implements t.Visitor<void>, LocalResolver
         throw new Error('advance instruction can only go forwards');
       }
 
-      this.instructionFn(this._updateCodeFns, span, R3.advance, [o.literal(delta)]);
+      this.instructionFn(
+          this._updateCodeFns, span, R3.advance, delta > 1 ? [o.literal(delta)] : []);
       this._currentIndex = nodeIndex;
     }
   }
@@ -2550,11 +2563,16 @@ export class BindingScope implements LocalResolver {
 class TrackByBindingScope extends BindingScope {
   private componentAccessCount = 0;
 
-  constructor(parentScope: BindingScope, private globalAliases: Record<string, string>) {
+  constructor(parentScope: BindingScope, private globalOverrides: Record<string, string>) {
     super(parentScope.bindingLevel + 1, parentScope);
   }
 
   override get(name: string): o.Expression|null {
+    // Intercept any overridden globals.
+    if (this.globalOverrides.hasOwnProperty(name)) {
+      return o.variable(this.globalOverrides[name]);
+    }
+
     let current: BindingScope|null = this.parent;
 
     // Prevent accesses of template variables outside the `for` loop.
@@ -2563,11 +2581,6 @@ class TrackByBindingScope extends BindingScope {
         return null;
       }
       current = current.parent;
-    }
-
-    // Intercept any aliased globals.
-    if (this.globalAliases[name]) {
-      return o.variable(this.globalAliases[name]);
     }
 
     // When the component scope is accessed, we redirect it through `this`.

@@ -407,6 +407,11 @@ export interface AttributeOp extends Op<UpdateOp> {
   target: XrefId;
 
   /**
+   * The namespace of the attribute (or null if none).
+   */
+  namespace: string|null;
+
+  /**
    * The name of the attribute.
    */
   name: string;
@@ -456,13 +461,14 @@ export interface AttributeOp extends Op<UpdateOp> {
  * Create an `AttributeOp`.
  */
 export function createAttributeOp(
-    target: XrefId, name: string, expression: o.Expression|Interpolation,
+    target: XrefId, namespace: string|null, name: string, expression: o.Expression|Interpolation,
     securityContext: SecurityContext|SecurityContext[], isTextAttribute: boolean,
     isStructuralTemplateAttribute: boolean, templateKind: TemplateKind|null,
     i18nMessage: i18n.Message|null, sourceSpan: ParseSourceSpan): AttributeOp {
   return {
     kind: OpKind.Attribute,
     target,
+    namespace,
     name,
     expression,
     securityContext,
@@ -604,7 +610,7 @@ export function createRepeaterOp(
   };
 }
 
-export interface DeferWhenOp extends Op<UpdateOp>, DependsOnSlotContextOpTrait {
+export interface DeferWhenOp extends Op<UpdateOp>, DependsOnSlotContextOpTrait, ConsumesVarsTrait {
   kind: OpKind.DeferWhen;
 
   /**
@@ -636,6 +642,7 @@ export function createDeferWhenOp(
     sourceSpan,
     ...NEW_OP,
     ...TRAIT_DEPENDS_ON_SLOT_CONTEXT,
+    ...TRAIT_CONSUMES_VARS,
   };
 }
 
@@ -686,10 +693,15 @@ export interface I18nExpressionOp extends Op<UpdateOp>, ConsumesVarsTrait,
    */
   expression: o.Expression;
 
+  icuPlaceholder: XrefId|null;
+
   /**
-   * The i18n placeholder associated with this expression.
+   * The i18n placeholder associated with this expression. This can be null if the expression is
+   * part of an ICU placeholder. In this case it gets combined with the string literal value and
+   * other expressions in the ICU placeholder and assigned to the translated message under the ICU
+   * placeholder name.
    */
-  i18nPlaceholder: string;
+  i18nPlaceholder: string|null;
 
   /**
    * The time that this expression is resolved.
@@ -715,8 +727,9 @@ export interface I18nExpressionOp extends Op<UpdateOp>, ConsumesVarsTrait,
  */
 export function createI18nExpressionOp(
     context: XrefId, target: XrefId, i18nOwner: XrefId, handle: SlotHandle,
-    expression: o.Expression, i18nPlaceholder: string, resolutionTime: I18nParamResolutionTime,
-    usage: I18nExpressionFor, name: string, sourceSpan: ParseSourceSpan): I18nExpressionOp {
+    expression: o.Expression, icuPlaceholder: XrefId|null, i18nPlaceholder: string|null,
+    resolutionTime: I18nParamResolutionTime, usage: I18nExpressionFor, name: string,
+    sourceSpan: ParseSourceSpan): I18nExpressionOp {
   return {
     kind: OpKind.I18nExpression,
     context,
@@ -724,6 +737,7 @@ export function createI18nExpressionOp(
     i18nOwner,
     handle,
     expression,
+    icuPlaceholder,
     i18nPlaceholder,
     resolutionTime,
     usage,

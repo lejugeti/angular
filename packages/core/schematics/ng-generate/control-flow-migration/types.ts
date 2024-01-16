@@ -9,6 +9,8 @@
 import {Attribute, Element, ParseTreeResult, RecursiveVisitor, Text} from '@angular/compiler';
 import ts from 'typescript';
 
+import {lookupIdentifiersInSourceFile} from './identifier-lookup';
+
 export const ngtemplate = 'ng-template';
 export const boundngifelse = '[ngIfElse]';
 export const boundngifthenelse = '[ngIfThenElse]';
@@ -20,6 +22,13 @@ export const endMarker = '✢';
 
 export const startI18nMarker = '⚈';
 export const endI18nMarker = '⚉';
+
+export const importRemovals = [
+  'NgIf', 'NgIfElse', 'NgIfThenElse', 'NgFor', 'NgForOf', 'NgForTrackBy', 'NgSwitch',
+  'NgSwitchCase', 'NgSwitchDefault'
+];
+
+export const importWithCommonRemovals = [...importRemovals, 'CommonModule'];
 
 function allFormsOf(selector: string): string[] {
   return [
@@ -71,7 +80,7 @@ const commonModulePipes = [
  */
 type Range = {
   start: number,
-  end?: number, node: ts.Node, type: string,
+  end?: number, node: ts.Node, type: string, remove: boolean,
 };
 
 export type Offsets = {
@@ -252,18 +261,25 @@ export class AnalyzedFile {
   private ranges: Range[] = [];
   removeCommonModule = false;
   canRemoveImports = false;
-  sourceFilePath: string = '';
+  sourceFile: ts.SourceFile;
+  importRanges: Range[] = [];
+  templateRanges: Range[] = [];
+
+  constructor(sourceFile: ts.SourceFile) {
+    this.sourceFile = sourceFile;
+  }
 
   /** Returns the ranges in the order in which they should be migrated. */
   getSortedRanges(): Range[] {
     // templates first for checking on whether certain imports can be safely removed
-    const templateRanges = this.ranges.slice()
-                               .filter(x => x.type !== 'import')
-                               .sort((aStart, bStart) => bStart.start - aStart.start);
-    const importRanges = this.ranges.slice()
-                             .filter(x => x.type === 'import')
-                             .sort((aStart, bStart) => bStart.start - aStart.start);
-    return [...templateRanges, ...importRanges];
+    this.templateRanges = this.ranges.slice()
+                              .filter(x => x.type === 'template' || x.type === 'templateUrl')
+                              .sort((aStart, bStart) => bStart.start - aStart.start);
+    this.importRanges =
+        this.ranges.slice()
+            .filter(x => x.type === 'importDecorator' || x.type === 'importDeclaration')
+            .sort((aStart, bStart) => bStart.start - aStart.start);
+    return [...this.templateRanges, ...this.importRanges];
   }
 
   /**
@@ -273,13 +289,12 @@ export class AnalyzedFile {
    * @param range Range to be added.
    */
   static addRange(
-      path: string, sourceFilePath: string, analyzedFiles: Map<string, AnalyzedFile>,
+      path: string, sourceFile: ts.SourceFile, analyzedFiles: Map<string, AnalyzedFile>,
       range: Range): void {
     let analysis = analyzedFiles.get(path);
 
     if (!analysis) {
-      analysis = new AnalyzedFile();
-      analysis.sourceFilePath = sourceFilePath;
+      analysis = new AnalyzedFile(sourceFile);
       analyzedFiles.set(path, analysis);
     }
 
@@ -288,6 +303,30 @@ export class AnalyzedFile {
 
     if (!duplicate) {
       analysis.ranges.push(range);
+    }
+  }
+
+  /**
+   * This verifies whether a component class is safe to remove module imports.
+   * It is only run on .ts files.
+   */
+  verifyCanRemoveImports() {
+    const importDeclaration = this.importRanges.find(r => r.type === 'importDeclaration');
+    const instances = lookupIdentifiersInSourceFile(this.sourceFile, importWithCommonRemovals);
+    let foundImportDeclaration = false;
+    let count = 0;
+    for (let range of this.importRanges) {
+      for (let instance of instances) {
+        if (instance.getStart() >= range.start && instance.getEnd() <= range.end!) {
+          if (range === importDeclaration) {
+            foundImportDeclaration = true;
+          }
+          count++;
+        }
+      }
+    }
+    if (instances.size !== count && importDeclaration !== undefined && foundImportDeclaration) {
+      importDeclaration.remove = false;
     }
   }
 }

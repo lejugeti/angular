@@ -6,6 +6,7 @@
 
 import { Observable } from 'rxjs';
 import { SIGNAL } from '@angular/core/primitives/signals';
+import { SignalNode } from '@angular/core/primitives/signals';
 import { Subject } from 'rxjs';
 import { Subscription } from 'rxjs';
 
@@ -646,12 +647,12 @@ export interface FactorySansProvider {
 }
 
 // @public
-export function forwardRef(forwardRefFn: ForwardRefFn): Type<any>;
+export function forwardRef<T>(forwardRefFn: ForwardRefFn<T>): T;
 
 // @public
-export interface ForwardRefFn {
+export interface ForwardRefFn<T> {
     // (undocumented)
-    (): any;
+    (): T;
 }
 
 // @public (undocumented)
@@ -866,6 +867,9 @@ export interface Input {
 // @public (undocumented)
 export const Input: InputDecorator;
 
+// @public
+export const input: InputFunction;
+
 // @public (undocumented)
 export interface InputDecorator {
     (arg?: string | Input): any;
@@ -874,10 +878,41 @@ export interface InputDecorator {
 }
 
 // @public
-export type InputSignal<ReadT, WriteT = ReadT> = Signal<ReadT> & {
-    [ɵINPUT_SIGNAL_BRAND_READ_TYPE]: ReadT;
-    [ɵINPUT_SIGNAL_BRAND_WRITE_TYPE]: WriteT;
+export interface InputFunction {
+    <ReadT>(): InputSignal<ReadT | undefined>;
+    // (undocumented)
+    <ReadT>(initialValue: ReadT, opts?: InputOptionsWithoutTransform<ReadT>): InputSignal<ReadT>;
+    // (undocumented)
+    <ReadT, WriteT>(initialValue: ReadT, opts: InputOptionsWithTransform<ReadT, WriteT>): InputSignal<ReadT, WriteT>;
+    required: {
+        <ReadT>(opts?: InputOptionsWithoutTransform<ReadT>): InputSignal<ReadT>;
+        <ReadT, WriteT>(opts: InputOptionsWithTransform<ReadT, WriteT>): InputSignal<ReadT, WriteT>;
+    };
+}
+
+// @public
+export interface InputOptions<ReadT, WriteT> {
+    alias?: string;
+    transform?: (v: WriteT) => ReadT;
+}
+
+// @public
+export type InputOptionsWithoutTransform<ReadT> = Omit<InputOptions<ReadT, ReadT>, 'transform'> & {
+    transform?: undefined;
 };
+
+// @public
+export type InputOptionsWithTransform<ReadT, WriteT> = Required<Pick<InputOptions<ReadT, WriteT>, 'transform'>> & InputOptions<ReadT, WriteT>;
+
+// @public
+export interface InputSignal<ReadT, WriteT = ReadT> extends Signal<ReadT> {
+    // (undocumented)
+    [ɵINPUT_SIGNAL_BRAND_READ_TYPE]: ReadT;
+    // (undocumented)
+    [ɵINPUT_SIGNAL_BRAND_WRITE_TYPE]: WriteT;
+    // (undocumented)
+    [SIGNAL]: InputSignalNode<ReadT, WriteT>;
+}
 
 // @public
 export function isDevMode(): boolean;
@@ -1641,21 +1676,6 @@ export interface WritableSignal<T> extends Signal<T> {
     set(value: T): void;
     update(updateFn: (value: T) => T): void;
 }
-
-// @public
-export function ɵinputFunctionForApiGuard<ReadT>(): InputSignal<ReadT | undefined>;
-
-// @public (undocumented)
-export function ɵinputFunctionForApiGuard<ReadT>(initialValue: ReadT, opts?: ɵInputOptionsWithoutTransform<ReadT>): InputSignal<ReadT>;
-
-// @public (undocumented)
-export function ɵinputFunctionForApiGuard<ReadT, WriteT>(initialValue: ReadT, opts: ɵInputOptionsWithTransform<ReadT, WriteT>): InputSignal<ReadT, WriteT>;
-
-// @public
-export function ɵinputFunctionRequiredForApiGuard<ReadT>(opts?: ɵInputOptionsWithoutTransform<ReadT>): InputSignal<ReadT>;
-
-// @public (undocumented)
-export function ɵinputFunctionRequiredForApiGuard<ReadT, WriteT>(opts: ɵInputOptionsWithTransform<ReadT, WriteT>): InputSignal<ReadT, WriteT>;
 
 // (No @packageDocumentation comment for this package)
 

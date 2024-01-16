@@ -16,7 +16,7 @@ export * from './authoring';
 // Input is exported separately as this file is exempted from JSCompiler's
 // conformance requirement for inferred const exports.
 // See: https://docs.google.com/document/d/1RXb1wYwsbJotO1KBgSDsAtKpduGmIHod9ADxuXcAvV4/edit?tab=t.0
-export {input as ɵinput} from './authoring/input';
+export {input} from './authoring/input';
 
 export * from './metadata';
 export * from './version';
@@ -25,7 +25,7 @@ export * from './di';
 export {BootstrapOptions, ApplicationRef, NgProbeToken, APP_BOOTSTRAP_LISTENER} from './application/application_ref';
 export {PlatformRef} from './platform/platform_ref';
 export {createPlatform, createPlatformFactory, assertPlatform, destroyPlatform, getPlatform} from './platform/platform';
-export {provideZoneChangeDetection, NgZoneOptions} from './change_detection/scheduling';
+export {provideZoneChangeDetection, NgZoneOptions} from './change_detection/scheduling/ng_zone_scheduling';
 export {enableProdMode, isDevMode} from './util/is_dev_mode';
 export {APP_ID, PACKAGE_ROOT_URL, PLATFORM_INITIALIZER, PLATFORM_ID, ANIMATION_MODULE_TYPE, CSP_NONCE} from './application/application_tokens';
 export {APP_INITIALIZER, ApplicationInitStatus} from './application/application_init';

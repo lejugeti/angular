@@ -62,6 +62,7 @@ ng_package(
     # Do not add more to this list.
     # Dependencies on the full npm_package cause long re-builds.
     visibility = [
+        "//adev:__pkg__",
         "//aio:__pkg__",
         "//aio/content/examples:__subpackages__",
         "//aio/tools/examples:__pkg__",
@@ -135,7 +136,9 @@ filegroup(
 
 generate_api_docs(
     name = "core_docs",
-    srcs = [":files_for_docgen"],
+    srcs = [
+        "//packages:common_files_and_deps_for_docs",
+    ],
     entry_point = ":index.ts",
     module_name = "@angular/core",
 )

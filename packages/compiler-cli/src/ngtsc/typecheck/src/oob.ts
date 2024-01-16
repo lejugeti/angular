@@ -6,7 +6,7 @@
  * found in the LICENSE file at https://angular.io/license
  */
 
-import {BindingPipe, PropertyRead, PropertyWrite, TmplAstBoundAttribute, TmplAstBoundEvent, TmplAstElement, TmplAstForLoopBlock, TmplAstHoverDeferredTrigger, TmplAstIfBlockBranch, TmplAstInteractionDeferredTrigger, TmplAstReference, TmplAstTemplate, TmplAstVariable, TmplAstViewportDeferredTrigger} from '@angular/compiler';
+import {AbsoluteSourceSpan, BindingPipe, PropertyRead, PropertyWrite, TmplAstBoundAttribute, TmplAstBoundEvent, TmplAstElement, TmplAstForLoopBlock, TmplAstForLoopBlockEmpty, TmplAstHoverDeferredTrigger, TmplAstIfBlockBranch, TmplAstInteractionDeferredTrigger, TmplAstReference, TmplAstTemplate, TmplAstVariable, TmplAstViewportDeferredTrigger} from '@angular/compiler';
 import ts from 'typescript';
 
 import {ErrorCode, makeDiagnostic, makeRelatedInformation, ngErrorCode} from '../../diagnostics';
@@ -49,6 +49,26 @@ export interface OutOfBandDiagnosticRecorder {
    * @param ast the `BindingPipe` invocation of the pipe which could not be found.
    */
   missingPipe(templateId: TemplateId, ast: BindingPipe): void;
+
+  /**
+   * Reports usage of a pipe imported via `@Component.deferredImports` outside
+   * of a `@defer` block in a template.
+   *
+   * @param templateId the template type-checking ID of the template which contains the unknown
+   * pipe.
+   * @param ast the `BindingPipe` invocation of the pipe which could not be found.
+   */
+  deferredPipeUsedEagerly(templateId: TemplateId, ast: BindingPipe): void;
+
+  /**
+   * Reports usage of a component/directive imported via `@Component.deferredImports` outside
+   * of a `@defer` block in a template.
+   *
+   * @param templateId the template type-checking ID of the template which contains the unknown
+   * pipe.
+   * @param element the element which hosts a component that was defer-loaded.
+   */
+  deferredComponentUsedEagerly(templateId: TemplateId, element: TmplAstElement): void;
 
   illegalAssignmentToTemplateVar(
       templateId: TemplateId, assignment: PropertyWrite, target: TmplAstVariable): void;
@@ -107,7 +127,7 @@ export interface OutOfBandDiagnosticRecorder {
   controlFlowPreventingContentProjection(
       templateId: TemplateId, category: ts.DiagnosticCategory,
       projectionNode: TmplAstElement|TmplAstTemplate, componentName: string, slotSelector: string,
-      controlFlowNode: TmplAstIfBlockBranch|TmplAstForLoopBlock,
+      controlFlowNode: TmplAstIfBlockBranch|TmplAstForLoopBlock|TmplAstForLoopBlockEmpty,
       preservesWhitespaces: boolean): void;
 }
 
@@ -153,6 +173,48 @@ export class OutOfBandDiagnosticRecorderImpl implements OutOfBandDiagnosticRecor
         templateId, mapping, sourceSpan, ts.DiagnosticCategory.Error,
         ngErrorCode(ErrorCode.MISSING_PIPE), errorMsg));
     this.recordedPipes.add(ast);
+  }
+
+  deferredPipeUsedEagerly(templateId: TemplateId, ast: BindingPipe): void {
+    if (this.recordedPipes.has(ast)) {
+      return;
+    }
+
+    const mapping = this.resolver.getSourceMapping(templateId);
+    const errorMsg = `Pipe '${ast.name}' was imported  via \`@Component.deferredImports\`, ` +
+        `but was used outside of a \`@defer\` block in a template. To fix this, either ` +
+        `use the '${ast.name}' pipe inside of a \`@defer\` block or import this dependency ` +
+        `using the \`@Component.imports\` field.`;
+
+    const sourceSpan = this.resolver.toParseSourceSpan(templateId, ast.nameSpan);
+    if (sourceSpan === null) {
+      throw new Error(
+          `Assertion failure: no SourceLocation found for usage of pipe '${ast.name}'.`);
+    }
+    this._diagnostics.push(makeTemplateDiagnostic(
+        templateId, mapping, sourceSpan, ts.DiagnosticCategory.Error,
+        ngErrorCode(ErrorCode.DEFERRED_PIPE_USED_EAGERLY), errorMsg));
+    this.recordedPipes.add(ast);
+  }
+
+  deferredComponentUsedEagerly(templateId: TemplateId, element: TmplAstElement): void {
+    const mapping = this.resolver.getSourceMapping(templateId);
+    const errorMsg = `Element '${element.name}' contains a component or a directive that ` +
+        `was imported  via \`@Component.deferredImports\`, but the element itself is located ` +
+        `outside of a \`@defer\` block in a template. To fix this, either ` +
+        `use the '${element.name}' element inside of a \`@defer\` block or ` +
+        `import referenced component/directive dependency using the \`@Component.imports\` field.`;
+
+    const {start, end} = element.startSourceSpan;
+    const absoluteSourceSpan = new AbsoluteSourceSpan(start.offset, end.offset);
+    const sourceSpan = this.resolver.toParseSourceSpan(templateId, absoluteSourceSpan);
+    if (sourceSpan === null) {
+      throw new Error(
+          `Assertion failure: no SourceLocation found for usage of pipe '${element.name}'.`);
+    }
+    this._diagnostics.push(makeTemplateDiagnostic(
+        templateId, mapping, sourceSpan, ts.DiagnosticCategory.Error,
+        ngErrorCode(ErrorCode.DEFERRED_DIRECTIVE_USED_EAGERLY), errorMsg));
   }
 
   illegalAssignmentToTemplateVar(
@@ -353,9 +415,17 @@ export class OutOfBandDiagnosticRecorderImpl implements OutOfBandDiagnosticRecor
   controlFlowPreventingContentProjection(
       templateId: TemplateId, category: ts.DiagnosticCategory,
       projectionNode: TmplAstElement|TmplAstTemplate, componentName: string, slotSelector: string,
-      controlFlowNode: TmplAstIfBlockBranch|TmplAstForLoopBlock,
+      controlFlowNode: TmplAstIfBlockBranch|TmplAstForLoopBlock|TmplAstForLoopBlockEmpty,
       preservesWhitespaces: boolean): void {
-    const blockName = controlFlowNode instanceof TmplAstIfBlockBranch ? '@if' : '@for';
+    let blockName: string;
+    if (controlFlowNode instanceof TmplAstForLoopBlockEmpty) {
+      blockName = '@empty';
+    } else if (controlFlowNode instanceof TmplAstForLoopBlock) {
+      blockName = '@for';
+    } else {
+      blockName = '@if';
+    }
+
     const lines = [
       `Node matches the "${slotSelector}" slot of the "${
           componentName}" component, but will not be projected into the specific slot because the surrounding ${

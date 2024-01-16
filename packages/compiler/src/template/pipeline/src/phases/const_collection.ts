@@ -8,7 +8,6 @@
 
 
 import * as core from '../../../../core';
-import {splitNsName} from '../../../../ml_parser/tags';
 import * as o from '../../../../output/output_ast';
 import * as ir from '../../ir';
 
@@ -25,9 +24,10 @@ export function collectElementConsts(job: CompilationJob): void {
   for (const unit of job.units) {
     for (const op of unit.create) {
       if (op.kind === ir.OpKind.ExtractedAttribute) {
-        const attributes = allElementAttributes.get(op.target) || new ElementAttributes();
+        const attributes =
+            allElementAttributes.get(op.target) || new ElementAttributes(job.compatibility);
         allElementAttributes.set(op.target, attributes);
-        attributes.add(op.bindingKind, op.name, op.expression, op.trustedValueFn);
+        attributes.add(op.bindingKind, op.name, op.expression, op.namespace, op.trustedValueFn);
         ir.OpList.remove<ir.CreateOp>(op);
       }
     }
@@ -37,13 +37,24 @@ export function collectElementConsts(job: CompilationJob): void {
   if (job instanceof ComponentCompilationJob) {
     for (const unit of job.units) {
       for (const op of unit.create) {
-        if (ir.isElementOrContainerOp(op)) {
+        // TODO: Simplify and combine these cases.
+        if (op.kind == ir.OpKind.Projection) {
           const attributes = allElementAttributes.get(op.xref);
           if (attributes !== undefined) {
             const attrArray = serializeAttributes(attributes);
             if (attrArray.entries.length > 0) {
-              op.attributes = job.addConst(attrArray);
+              op.attributes = attrArray;
             }
+          }
+        } else if (ir.isElementOrContainerOp(op)) {
+          op.attributes = getConstIndex(job, allElementAttributes, op.xref);
+
+          // TODO(dylhunn): `@for` loops with `@empty` blocks need to be special-cased here,
+          // because the slot consumer trait currently only supports one slot per consumer and we
+          // need two. This should be revisited when making the refactors mentioned in:
+          // https://github.com/angular/angular/pull/53620#discussion_r1430918822
+          if (op.kind === ir.OpKind.RepeaterCreate && op.emptyView !== null) {
+            op.emptyAttributes = getConstIndex(job, allElementAttributes, op.emptyView);
           }
         }
       }
@@ -64,6 +75,19 @@ export function collectElementConsts(job: CompilationJob): void {
   }
 }
 
+function getConstIndex(
+    job: ComponentCompilationJob, allElementAttributes: Map<ir.XrefId, ElementAttributes>,
+    xref: ir.XrefId): ir.ConstIndex|null {
+  const attributes = allElementAttributes.get(xref);
+  if (attributes !== undefined) {
+    const attrArray = serializeAttributes(attributes);
+    if (attrArray.entries.length > 0) {
+      return job.addConst(attrArray);
+    }
+  }
+  return null;
+}
+
 /**
  * Shared instance of an empty array to avoid unnecessary array allocations.
  */
@@ -73,7 +97,7 @@ const FLYWEIGHT_ARRAY: ReadonlyArray<o.Expression> = Object.freeze<o.Expression[
  * Container for all of the various kinds of attributes which are applied on an element.
  */
 class ElementAttributes {
-  private known = new Set<string>();
+  private known = new Map<ir.BindingKind, Set<string>>();
   private byKind = new Map<ir.BindingKind, o.Expression[]>;
 
   projectAs: string|null = null;
@@ -102,12 +126,30 @@ class ElementAttributes {
     return this.byKind.get(ir.BindingKind.I18n) ?? FLYWEIGHT_ARRAY;
   }
 
-  add(kind: ir.BindingKind, name: string, value: o.Expression|null,
+  constructor(private compatibility: ir.CompatibilityMode) {}
+
+  isKnown(kind: ir.BindingKind, name: string, value: o.Expression|null) {
+    const nameToValue = this.known.get(kind) ?? new Set<string>();
+    this.known.set(kind, nameToValue);
+    if (nameToValue.has(name)) {
+      return true;
+    }
+    nameToValue.add(name);
+    return false;
+  }
+
+  add(kind: ir.BindingKind, name: string, value: o.Expression|null, namespace: string|null,
       trustedValueFn: o.Expression|null): void {
-    if (this.known.has(name)) {
+    // TemplateDefinitionBuilder puts duplicate attribute, class, and style values into the consts
+    // array. This seems inefficient, we can probably keep just the first one or the last value
+    // (whichever actually gets applied when multiple values are listed for the same attribute).
+    const allowDuplicates = this.compatibility === ir.CompatibilityMode.TemplateDefinitionBuilder &&
+        (kind === ir.BindingKind.Attribute || kind === ir.BindingKind.ClassName ||
+         kind === ir.BindingKind.StyleProperty);
+    if (!allowDuplicates && this.isKnown(kind, name, value)) {
       return;
     }
-    this.known.add(name);
+
     // TODO: Can this be its own phase
     if (name === 'ngProjectAs') {
       if (value === null || !(value instanceof o.LiteralExpr) || (value.value == null) ||
@@ -121,7 +163,7 @@ class ElementAttributes {
 
 
     const array = this.arrayFor(kind);
-    array.push(...getAttributeNameLiterals(name));
+    array.push(...getAttributeNameLiterals(namespace, name));
     if (kind === ir.BindingKind.Attribute || kind === ir.BindingKind.StyleProperty) {
       if (value === null) {
         throw Error('Attribute, i18n attribute, & style element attributes must have a value');
@@ -150,14 +192,11 @@ class ElementAttributes {
 /**
  * Gets an array of literal expressions representing the attribute's namespaced name.
  */
-function getAttributeNameLiterals(name: string): o.LiteralExpr[] {
-  const [attributeNamespace, attributeName] = splitNsName(name);
-  const nameLiteral = o.literal(attributeName);
+function getAttributeNameLiterals(namespace: string|null, name: string): o.LiteralExpr[] {
+  const nameLiteral = o.literal(name);
 
-  if (attributeNamespace) {
-    return [
-      o.literal(core.AttributeMarker.NamespaceURI), o.literal(attributeNamespace), nameLiteral
-    ];
+  if (namespace) {
+    return [o.literal(core.AttributeMarker.NamespaceURI), o.literal(namespace), nameLiteral];
   }
 
   return [nameLiteral];

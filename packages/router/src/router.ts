@@ -7,7 +7,7 @@
  */
 
 import {Location} from '@angular/common';
-import {inject, Injectable, NgZone, Type, ɵConsole as Console, ɵInitialRenderPendingTasks as InitialRenderPendingTasks, ɵRuntimeError as RuntimeError, ɵWritable as Writable} from '@angular/core';
+import {inject, Injectable, NgZone, Type, ɵConsole as Console, ɵPendingTasks as PendingTasks, ɵRuntimeError as RuntimeError} from '@angular/core';
 import {Observable, Subject, Subscription, SubscriptionLike} from 'rxjs';
 
 import {createSegmentGroupFromRoute, createUrlTreeFromSegmentGroup} from './create_url_tree';
@@ -81,7 +81,7 @@ export class Router {
   private readonly console = inject(Console);
   private readonly stateManager = inject(StateManager);
   private readonly options = inject(ROUTER_CONFIGURATION, {optional: true}) || {};
-  private readonly pendingTasks = inject(InitialRenderPendingTasks);
+  private readonly pendingTasks = inject(PendingTasks);
   private readonly urlUpdateStrategy = this.options.urlUpdateStrategy || 'deferred';
   private readonly navigationTransitions = inject(NavigationTransitions);
   private readonly urlSerializer = inject(UrlSerializer);
@@ -574,8 +574,7 @@ export class Router {
   }
 
   private removeEmptyProps(params: Params): Params {
-    return Object.keys(params).reduce((result: Params, key: string) => {
-      const value: any = params[key];
+    return Object.entries(params).reduce((result: Params, [key, value]: [string, any]) => {
       if (value !== null && value !== undefined) {
         result[key] = value;
       }

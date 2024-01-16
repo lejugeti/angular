@@ -6,11 +6,11 @@
  * found in the LICENSE file at https://angular.io/license
  */
 
-import {AST, BindingPipe, BindingType, BoundTarget, Call, createCssSelectorFromNode, CssSelector, DYNAMIC_TYPE, ImplicitReceiver, ParsedEventType, ParseSourceSpan, PropertyRead, PropertyWrite, R3Identifiers, SafeCall, SafePropertyRead, SchemaMetadata, SelectorMatcher, ThisReceiver, TmplAstBoundAttribute, TmplAstBoundEvent, TmplAstBoundText, TmplAstDeferredBlock, TmplAstDeferredBlockTriggers, TmplAstElement, TmplAstForLoopBlock, TmplAstHoverDeferredTrigger, TmplAstIcu, TmplAstIfBlock, TmplAstIfBlockBranch, TmplAstInteractionDeferredTrigger, TmplAstNode, TmplAstReference, TmplAstSwitchBlock, TmplAstSwitchBlockCase, TmplAstTemplate, TmplAstText, TmplAstTextAttribute, TmplAstVariable, TmplAstViewportDeferredTrigger, TransplantedType} from '@angular/compiler';
+import {AST, BindingPipe, BindingType, BoundTarget, Call, createCssSelectorFromNode, CssSelector, DYNAMIC_TYPE, ImplicitReceiver, ParsedEventType, ParseSourceSpan, PropertyRead, PropertyWrite, R3Identifiers, SafeCall, SafePropertyRead, SchemaMetadata, SelectorMatcher, ThisReceiver, TmplAstBoundAttribute, TmplAstBoundEvent, TmplAstBoundText, TmplAstDeferredBlock, TmplAstDeferredBlockTriggers, TmplAstElement, TmplAstForLoopBlock, TmplAstForLoopBlockEmpty, TmplAstHoverDeferredTrigger, TmplAstIcu, TmplAstIfBlock, TmplAstIfBlockBranch, TmplAstInteractionDeferredTrigger, TmplAstNode, TmplAstReference, TmplAstSwitchBlock, TmplAstSwitchBlockCase, TmplAstTemplate, TmplAstText, TmplAstTextAttribute, TmplAstVariable, TmplAstViewportDeferredTrigger, TransplantedType} from '@angular/compiler';
 import ts from 'typescript';
 
 import {Reference} from '../../imports';
-import {BindingPropertyName, ClassPropertyName} from '../../metadata';
+import {BindingPropertyName, ClassPropertyName, PipeMeta} from '../../metadata';
 import {ClassDeclaration} from '../../reflection';
 import {TemplateId, TypeCheckableDirectiveMeta, TypeCheckBlockMetadata} from '../api';
 
@@ -992,14 +992,19 @@ class TcbControlFlowContentProjectionOp extends TcbOp {
   }
 
   private findPotentialControlFlowNodes() {
-    const result: Array<TmplAstIfBlockBranch|TmplAstForLoopBlock> = [];
+    const result: Array<TmplAstIfBlockBranch|TmplAstForLoopBlock|TmplAstForLoopBlockEmpty> = [];
 
     for (const child of this.element.children) {
       let eligibleNode: TmplAstForLoopBlock|TmplAstIfBlockBranch|null = null;
 
       // Only `@for` blocks and the first branch of `@if` blocks participate in content projection.
       if (child instanceof TmplAstForLoopBlock) {
-        eligibleNode = child;
+        if (this.shouldCheck(child)) {
+          result.push(child);
+        }
+        if (child.empty !== null && this.shouldCheck(child.empty)) {
+          result.push(child.empty);
+        }
       } else if (child instanceof TmplAstIfBlock) {
         eligibleNode = child.branches[0];  // @if blocks are guaranteed to have at least one branch.
       }
@@ -1032,6 +1037,32 @@ class TcbControlFlowContentProjectionOp extends TcbOp {
     }
 
     return result;
+  }
+
+  private shouldCheck(node: TmplAstNode&{children: TmplAstNode[]}): boolean {
+    // Skip nodes with less than two children since it's impossible
+    // for them to run into the issue that we're checking for.
+    if (node.children.length < 2) {
+      return false;
+    }
+
+    // Count the number of root nodes while skipping empty text where relevant.
+    const rootNodeCount = node.children.reduce((count, node) => {
+      // Normally `preserveWhitspaces` would have been accounted for during parsing, however
+      // in `ngtsc/annotations/component/src/resources.ts#parseExtractedTemplate` we enable
+      // `preserveWhitespaces` to preserve the accuracy of source maps diagnostics. This means
+      // that we have to account for it here since the presence of text nodes affects the
+      // content projection behavior.
+      if (!(node instanceof TmplAstText) || this.tcb.hostPreserveWhitespaces ||
+          node.value.trim().length > 0) {
+        count++;
+      }
+
+      return count;
+    }, 0);
+
+    // Content projection can only be affected if there is more than one root node.
+    return rootNodeCount > 1;
   }
 }
 
@@ -1620,9 +1651,8 @@ export class Context {
       readonly env: Environment, readonly domSchemaChecker: DomSchemaChecker,
       readonly oobRecorder: OutOfBandDiagnosticRecorder, readonly id: TemplateId,
       readonly boundTarget: BoundTarget<TypeCheckableDirectiveMeta>,
-      private pipes: Map<string, Reference<ClassDeclaration<ts.ClassDeclaration>>>,
-      readonly schemas: SchemaMetadata[], readonly hostIsStandalone: boolean,
-      readonly hostPreserveWhitespaces: boolean) {}
+      private pipes: Map<string, PipeMeta>, readonly schemas: SchemaMetadata[],
+      readonly hostIsStandalone: boolean, readonly hostPreserveWhitespaces: boolean) {}
 
   /**
    * Allocate a new variable name for use within the `Context`.
@@ -1634,7 +1664,7 @@ export class Context {
     return ts.factory.createIdentifier(`_t${this.nextId++}`);
   }
 
-  getPipeByName(name: string): Reference<ClassDeclaration<ts.ClassDeclaration>>|null {
+  getPipeByName(name: string): PipeMeta|null {
     if (!this.pipes.has(name)) {
       return null;
     }
@@ -2051,6 +2081,16 @@ class Scope {
             new TcbDomSchemaCheckerOp(this.tcb, node, /* checkElement */ true, claimedInputs));
       }
       return;
+    } else {
+      if (node instanceof TmplAstElement) {
+        const isDeferred = this.tcb.boundTarget.isDeferred(node);
+        if (!isDeferred && directives.some((dirMeta) => dirMeta.isExplicitlyDeferred)) {
+          // This node has directives/components that were defer-loaded (included into
+          // `@Component.deferredImports`), but the node itself was used outside of a
+          // `@defer` block, which is the error.
+          this.tcb.oobRecorder.deferredComponentUsedEagerly(this.tcb.id, node);
+        }
+      }
     }
 
     const dirMap = new Map<TypeCheckableDirectiveMeta, number>();
@@ -2287,6 +2327,20 @@ class TcbExpressionTranslator {
    * context). This method assists in resolving those.
    */
   protected resolve(ast: AST): ts.Expression|null {
+    // TODO: this is actually a bug, because `ImpliticReceiver` extends `ThisReceiver`. Consider a
+    // case when the explicit `this` read is inside a template with a context that also provides the
+    // variable name being read:
+    // ```
+    // <ng-template let-a>{{this.a}}</ng-template>
+    // ```
+    // Clearly, `this.a` should refer to the class property `a`. However, becuase of this code,
+    // `this.a` will refer to `let-a` on the template context.
+    //
+    // Note that the generated code is actually consistent with this bug. To fix it, we have to:
+    // - Check `!(ast.receiver instanceof ThisReceiver)` in this condition
+    // - Update `ingest.ts` in the Template Pipeline (see the corresponding comment)
+    // - Turn off legacy TemplateDefinitionBuilder
+    // - Fix g3, and release in a major version
     if (ast instanceof PropertyRead && ast.receiver instanceof ImplicitReceiver) {
       // Try to resolve a bound target for this expression. If no such target is available, then
       // the expression is referencing the top-level component context. In that case, `null` is
@@ -2320,17 +2374,27 @@ class TcbExpressionTranslator {
       return ts.factory.createThis();
     } else if (ast instanceof BindingPipe) {
       const expr = this.translate(ast.exp);
-      const pipeRef = this.tcb.getPipeByName(ast.name);
+      const pipeMeta = this.tcb.getPipeByName(ast.name);
       let pipe: ts.Expression|null;
-      if (pipeRef === null) {
+      if (pipeMeta === null) {
         // No pipe by that name exists in scope. Record this as an error.
         this.tcb.oobRecorder.missingPipe(this.tcb.id, ast);
 
         // Use an 'any' value to at least allow the rest of the expression to be checked.
         pipe = NULL_AS_ANY;
+      } else if (
+          pipeMeta.isExplicitlyDeferred &&
+          this.tcb.boundTarget.getEagerlyUsedPipes().includes(ast.name)) {
+        // This pipe was defer-loaded (included into `@Component.deferredImports`),
+        // but was used outside of a `@defer` block, which is the error.
+        this.tcb.oobRecorder.deferredPipeUsedEagerly(this.tcb.id, ast);
+
+        // Use an 'any' value to at least allow the rest of the expression to be checked.
+        pipe = NULL_AS_ANY;
       } else {
         // Use a variable declared as the pipe's type.
-        pipe = this.tcb.env.pipeInst(pipeRef);
+        pipe =
+            this.tcb.env.pipeInst(pipeMeta.ref as Reference<ClassDeclaration<ts.ClassDeclaration>>);
       }
       const args = ast.args.map(arg => this.translate(arg));
       let methodAccess: ts.Expression =
