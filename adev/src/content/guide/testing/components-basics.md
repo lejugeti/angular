@@ -214,7 +214,7 @@ Although the tests in this guide all run in the browser, some applications might
 
 For example, the component might render first on the server as part of a strategy to make the application launch faster on poorly connected devices.
 The server-side renderer might not support the full HTML element API.
-If it doesn't support `querySelector`, the previous test could fail.
+If it doesn't support `query`, the previous test could fail.
 
 The `DebugElement` offers query methods that work for all supported platforms.
 These query methods take a *predicate* function that returns `true` when a node in the `DebugElement` tree matches the selection criteria.
@@ -230,7 +230,7 @@ The following example re-implements the previous test with `DebugElement.query()
 
 Some noteworthy observations:
 
-* The `By.css()` static method selects `DebugElement` nodes with a [standard CSS selector](https://developer.mozilla.org/docs/Web/Guide/CSS/Getting_started/Selectors 'CSS selectors').
+* The `By.css()` static method selects `DebugElement` nodes with a [standard CSS selector](https://developer.mozilla.org/docs/Learn/CSS/Building_blocks/Selectors 'CSS selectors').
 * The query returns a `DebugElement` for the paragraph.
 * You must unwrap that result to get the paragraph element.
 
